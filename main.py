@@ -10,9 +10,11 @@ from maze_solving import solve_maze_live
 ###
 
 #configuration parameters
+config_window_width = 1080
+config_window_height = 1920
 config_texture_scale = (1,1)  # Texture repeats per cell (horizontal, vertical).
 config_roof_height = 4
-config_movement_speed = 8
+config_movement_speed = 6
 config_maze_algorithm = 'DFS'
 config_maze_columns = 16
 config_maze_rows = 16
@@ -31,13 +33,18 @@ camera_target = None
 goal_cell = None
 solver_finished = False
 steps_taken = 0
+exit_door = None
 
 ###
 # INITIALIZE
 ###
 
 # create a window
-app = Ursina()
+app = Ursina(
+    size=(config_window_width, config_window_height),
+    fullscreen=False,
+    borderless=False,
+)
 
 
 def project_texture(filename, fallback):
@@ -51,6 +58,7 @@ def project_texture(filename, fallback):
 ground_texture = project_texture('ground.jpg', 'grass')
 ceiling_texture = project_texture('ceiling.jpg', 'brick')
 wall_texture = project_texture('wall.jpg', 'brick')
+door_texture = project_texture('door.jpg', 'brick')
 
 # create the ground of the maze
 surface_texture_scale = (
@@ -141,10 +149,36 @@ if passages:
     # Creating the iterator performs no search. update() advances it live.
     solver = solve_maze_live(config_maze_solver, maze, start=start_cell, end=goal_cell)
     solver_status.text = f'{config_maze_solver}: searching'
-    for cell, marker_color in ((start_cell, color.green), (goal_cell, color.red)):
-        point = cell_to_world(cell)
-        Entity(model='cube', position=(point.x, .03, point.z),
-               scale=(cell_width * .4, .05, cell_depth * .4), color=marker_color)
+    point = cell_to_world(start_cell)
+    Entity(model='cube', position=(point.x, .03, point.z),
+           scale=(cell_width * .4, .05, cell_depth * .4), color=color.green)
+
+    goal_position = cell_to_world(goal_cell)
+    door_height = config_roof_height * (2 / 3)
+    door_aspect = getattr(door_texture, 'width', 1) / getattr(door_texture, 'height', 2)
+    exit_door = Entity(
+        model='quad',
+        texture=door_texture,
+        texture_scale=(1, 1),
+        position=(goal_position.x, 0, goal_position.z),
+        origin_y=-.5,  # Anchor the bottom edge to the ground.
+        scale=(door_height * door_aspect, door_height, 1),
+        double_sided=True,
+        color=color.white,
+    )
+
+
+def face_exit_door_to_player():
+    if exit_door is None:
+        return
+    dx = camera.x - exit_door.x
+    dz = camera.z - exit_door.z
+    if dx * dx + dz * dz > .000001:
+        # Quad's front points along local -Z; rotate only around vertical Y.
+        exit_door.rotation_y = degrees(atan2(dx, dz)) + 180
+
+
+face_exit_door_to_player()
 
 
 def move_camera():
@@ -199,6 +233,7 @@ def move_camera():
 
 def update():
     move_camera()
+    face_exit_door_to_player()
 
 
 # start running the game

@@ -7,6 +7,7 @@ Place seamless JPG images in this folder using these exact filenames:
 | `wall.jpg` | Maze walls | `brick` |
 | `ground.jpg` | Ground | `grass` |
 | `ceiling.jpg` | Ceiling | `brick` |
+| `door.jpg` | Exit door | `brick` |
 
 Each texture is optional. Missing files use their built-in fallback independently.
 Restart `main.py` after adding or replacing images. Remove a file to restore its
@@ -20,6 +21,10 @@ Adjust `config_texture_scale` in `main.py` to change repeats per cell. The defau
 `(1, 1)` fits one image; `(2, 2)` repeats it twice in each direction within a cell.
 Seamless images tile without visible edges. Each image is stretched to fit the
 cell face, so rectangular faces may stretch square images.
+
+The exit door displays its image once, preserving the image's aspect ratio.
+It stands at the center of the goal cell, from the floor to two thirds of the
+wall height, and rotates horizontally to face the player. It has no collider.
 
 Custom images and subfolders are ignored by Git. Only this README is included
 in version control; provide your own images after cloning the project.
