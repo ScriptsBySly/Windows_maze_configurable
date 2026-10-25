@@ -25,6 +25,8 @@ config_maze_seed = rand()
 config_maze_solver = 'paintbrush'
 config_solver_expansions_per_frame = 16
 config_turn_speed = 180  # Degrees per second.
+config_wall_growth_duration = 1.5  # Seconds; set to 0 for instant walls.
+config_wall_growth_delay = 1.0  # Seconds before the walls begin rising.
 
 
 # Live solver state; no complete solution path is stored.
@@ -34,6 +36,8 @@ goal_cell = None
 solver_finished = False
 steps_taken = 0
 exit_door = None
+wall_growth_elapsed = 0
+walls_raised = False
 
 ###
 # INITIALIZE
@@ -116,8 +120,9 @@ if maze is not None:
                 walls.append(Entity(
                     model='cube',
                     collider='box',
-                    position=(x, config_roof_height / 2, z),
-                    scale=(cell_width, config_roof_height, cell_depth),
+                    position=(x, 0, z),
+                    origin_y=-.5,
+                    scale=(cell_width, .001, cell_depth),
                     texture=wall_texture,
                     texture_scale=(2, 2),
                     color=color.white,
@@ -181,6 +186,29 @@ def face_exit_door_to_player():
 face_exit_door_to_player()
 
 
+def raise_walls():
+    """Keep wall bottoms on the floor while stretching their tops upward."""
+    global wall_growth_elapsed, walls_raised
+    if walls_raised or not walls:
+        return False
+
+    wall_growth_elapsed += time.dt
+    growth_time = wall_growth_elapsed - config_wall_growth_delay
+    if growth_time < 0:
+        solver_status.text = 'Waiting to raise maze walls'
+        return True
+    progress = (1 if config_wall_growth_duration <= 0 else
+                min(growth_time / config_wall_growth_duration, 1))
+    eased = progress * progress * (3 - 2 * progress)
+    for wall in walls:
+        wall.scale_y = max(.001, config_roof_height * eased)
+
+    walls_raised = progress >= 1
+    if not walls_raised:
+        solver_status.text = 'Raising maze walls'
+    return not walls_raised
+
+
 def move_camera():
     global camera_target, solver_finished, steps_taken
 
@@ -232,6 +260,9 @@ def move_camera():
 
 
 def update():
+    if raise_walls():
+        face_exit_door_to_player()
+        return
     move_camera()
     face_exit_door_to_player()
 
