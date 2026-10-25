@@ -1,6 +1,7 @@
 from matplotlib.pylab import rand
 from math import atan2, degrees
 from ursina import *
+from pathlib import Path
 from maze_generator import generate_maze
 from maze_solving import solve_maze_live
 
@@ -9,14 +10,15 @@ from maze_solving import solve_maze_live
 ###
 
 #configuration parameters
-config_texture_scale = (8,2)
+config_texture_scale = (1,1)  # Texture repeats per cell (horizontal, vertical).
 config_roof_height = 4
-config_maze_size = 64  # World size; grid dimensions are configured below.
 config_movement_speed = 8
-config_camera_frontal_collider = 2
 config_maze_algorithm = 'DFS'
 config_maze_columns = 16
 config_maze_rows = 16
+config_cell_size = 8 * (2 / 3)  # Horizontal cell size, reduced by one third.
+config_maze_size = config_maze_columns * config_cell_size
+config_camera_frontal_collider = config_cell_size / 2
 config_maze_seed = rand()
 config_maze_solver = 'paintbrush'
 config_solver_expansions_per_frame = 16
@@ -37,9 +39,26 @@ steps_taken = 0
 # create a window
 app = Ursina()
 
+
+def project_texture(filename, fallback):
+    """Load an optional custom texture relative to this script."""
+    folder = Path(__file__).resolve().parent / 'Textures'
+    if not (folder / filename).is_file():
+        return fallback
+    return load_texture(filename, path=folder) or fallback
+
+
+ground_texture = project_texture('ground.jpg', 'grass')
+ceiling_texture = project_texture('ceiling.jpg', 'brick')
+wall_texture = project_texture('wall.jpg', 'brick')
+
 # create the ground of the maze
-ground  = Entity(model='plane', collider='box', scale=config_maze_size, texture='grass', texture_scale=config_texture_scale)
-ceiling = Entity(model='plane', collider='box', scale=config_maze_size, texture='brick', texture_scale=config_texture_scale, y=config_roof_height, rotation_x=180)
+surface_texture_scale = (
+    config_maze_columns * config_texture_scale[0],
+    config_maze_rows * config_texture_scale[1],
+)
+ground  = Entity(model='plane', collider='box', scale=config_maze_size, texture=ground_texture, texture_scale=surface_texture_scale)
+ceiling = Entity(model='plane', collider='box', scale=config_maze_size, texture=ceiling_texture, texture_scale=surface_texture_scale, y=config_roof_height, rotation_x=180)
 
 # setup the camera
 camera.position = (0, config_roof_height/2, 0)
@@ -91,8 +110,8 @@ if maze is not None:
                     collider='box',
                     position=(x, config_roof_height / 2, z),
                     scale=(cell_width, config_roof_height, cell_depth),
-                    texture='brick',
-                    texture_scale=config_texture_scale,
+                    texture=wall_texture,
+                    texture_scale=(2, 2),
                     color=color.white,
                 ))
             else:

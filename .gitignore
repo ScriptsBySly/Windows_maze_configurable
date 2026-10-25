@@ -1,0 +1,3 @@
+# Keep local custom textures out of version control, but retain instructions.
+/Textures/*
+!/Textures/README.md
