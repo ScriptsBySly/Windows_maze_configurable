@@ -1,4 +1,8 @@
+from matplotlib.pylab import rand
+from math import atan2, degrees
 from ursina import *
+from maze_generator import generate_maze
+from maze_solving import solve_maze_live
 
 ###
 # Global variables
@@ -7,16 +11,24 @@ from ursina import *
 #configuration parameters
 config_texture_scale = (8,2)
 config_roof_height = 4
-config_maze_size = 64
-config_movement_speed = 2
+config_maze_size = 64  # World size; grid dimensions are configured below.
+config_movement_speed = 8
 config_camera_frontal_collider = 2
+config_maze_algorithm = 'DFS'
+config_maze_columns = 16
+config_maze_rows = 16
+config_maze_seed = rand()
+config_maze_solver = 'paintbrush'
+config_solver_expansions_per_frame = 16
+config_turn_speed = 180  # Degrees per second.
 
 
-#flags
-flag_rotating = False
-
-#trackable variables
-rotation_remaining = 0
+# Live solver state; no complete solution path is stored.
+solver = None
+camera_target = None
+goal_cell = None
+solver_finished = False
+steps_taken = 0
 
 ###
 # INITIALIZE
@@ -49,53 +61,120 @@ camera.collider.visible = False
 ###
 # Generate maze walls
 ###
-half = config_maze_size / 16
-height = config_roof_height
-thickness = 1
+try:
+    maze = generate_maze(
+        config_maze_algorithm,
+        width=config_maze_columns,
+        height=config_maze_rows,
+        seed=config_maze_seed,
+    )
+except NotImplementedError as error:
+    # Keep the scene usable while the algorithm implementations are unfinished.
+    print(f'Maze generation: {error}')
+    maze = None
 
-wall_settings = dict(
-    model='cube',
-    collider='box',
-    texture='brick',
-    texture_scale=config_texture_scale,
-    color=color.white,
-)
+walls = []
+passages = []
+if maze is not None:
+    cell_width = config_maze_size / maze.width
+    cell_depth = config_maze_size / maze.height
+    start_position = None
 
-walls = [
-    # Left and right
-    Entity(position=(-half, height/2, 0),
-           scale=(thickness, height, config_maze_size),
-           **wall_settings),
-    Entity(position=(half, height/2, 0),
-           scale=(thickness, height, config_maze_size),
-           **wall_settings),
+    for row, cells in enumerate(maze.cells):
+        for column, cell in enumerate(cells):
+            x = (column + .5) * cell_width - config_maze_size / 2
+            z = (row + .5) * cell_depth - config_maze_size / 2
 
-    # Front and back
-    Entity(position=(0, height/2, half),
-           scale=(config_maze_size, height, thickness),
-           **wall_settings),
-    Entity(position=(0, height/2, -half),
-           scale=(config_maze_size, height, thickness),
-           **wall_settings),
-]
+            if cell == 1:
+                walls.append(Entity(
+                    model='cube',
+                    collider='box',
+                    position=(x, config_roof_height / 2, z),
+                    scale=(cell_width, config_roof_height, cell_depth),
+                    texture='brick',
+                    texture_scale=config_texture_scale,
+                    color=color.white,
+                ))
+            else:
+                passages.append((column, row))
+                if start_position is None:
+                    start_position = Vec3(x, config_roof_height / 2, z)
 
+    # Spawn inside the first passage rather than potentially inside a wall.
+    if start_position is not None:
+        camera.position = start_position
+
+
+solver_status = Text(text='No maze passages available', position=(-.85, .46), scale=1)
+
+
+def cell_to_world(cell):
+    column, row = cell
+    return Vec3(
+        (column + .5) * cell_width - config_maze_size / 2,
+        config_roof_height / 2,
+        (row + .5) * cell_depth - config_maze_size / 2,
+    )
+
+
+if passages:
+    start_cell, goal_cell = passages[0], passages[-1]
+    # Creating the iterator performs no search. update() advances it live.
+    solver = solve_maze_live(config_maze_solver, maze, start=start_cell, end=goal_cell)
+    solver_status.text = f'{config_maze_solver}: searching'
+    for cell, marker_color in ((start_cell, color.green), (goal_cell, color.red)):
+        point = cell_to_world(cell)
+        Entity(model='cube', position=(point.x, .03, point.z),
+               scale=(cell_width * .4, .05, cell_depth * .4), color=marker_color)
 
 
 def move_camera():
-    global flag_rotating, rotation_remaining
+    global camera_target, solver_finished, steps_taken
 
-    if not flag_rotating:
-        camera.position += camera.forward *config_movement_speed * time.dt
-        #If a collision is detected, set the flag to rotate camera
-        if camera.intersects(ignore=[ground, ceiling]).hit:
-            flag_rotating = True
-            rotation_remaining = 90
-    else:
-        camera.rotation_y -= 90 * time.dt  
-        rotation_remaining -= 90 * time.dt
-        if rotation_remaining <= 0:
-            flag_rotating = False
-            camera.rotation_y = round(camera.rotation_y / 90) * 90  # Snap to nearest 90 degrees
+    if solver is None or solver_finished:
+        return
+
+    if camera_target is None:
+        # Bound search work so a flood-fill cannot block the rendering loop.
+        for _ in range(config_solver_expansions_per_frame):
+            try:
+                decision = next(solver)
+            except StopIteration:
+                solver_finished = True
+                solver_status.text = 'No route to goal'
+                return
+            if decision is not None:
+                camera_target = decision
+                break
+        if camera_target is None:
+            solver_status.text = f'{config_maze_solver}: searching'
+            return
+
+    target = cell_to_world(camera_target)
+    delta = target - camera.position
+    remaining = delta.length()
+    if remaining > .0001:
+        # Turn in place, then travel between adjacent passage centers.
+        desired_yaw = degrees(atan2(delta.x, delta.z))
+        turn = (desired_yaw - camera.rotation_y + 180) % 360 - 180
+        turn_step = config_turn_speed * time.dt
+        if abs(turn) > .01:
+            camera.rotation_y += max(-turn_step, min(turn_step, turn))
+            solver_status.text = f'{config_maze_solver}: turning'
+            return
+        camera.rotation_y = desired_yaw
+        camera.position += delta.normalized() * min(config_movement_speed * time.dt, remaining)
+        solver_status.text = f'{config_maze_solver}: moving ({steps_taken} steps)'
+        if (target - camera.position).length() > .0001:
+            return
+
+    camera.position = target
+    if camera_target != start_cell:
+        steps_taken += 1
+    if camera_target == goal_cell:
+        solver_finished = True
+        solver_status.text = f'Solved! {steps_taken} steps'
+    camera_target = None
 
 
 
