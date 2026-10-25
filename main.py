@@ -2,8 +2,12 @@ from matplotlib.pylab import rand
 from math import atan2, degrees
 from ursina import *
 from pathlib import Path
+import ctypes
+import os
+from panda3d.core import Filename
 from maze_generator import generate_maze
 from maze_solving import solve_maze_live
+from text_gradient import vaporwave_text_shader
 
 ###
 # Global variables
@@ -27,6 +31,11 @@ config_solver_expansions_per_frame = 16
 config_turn_speed = 180  # Degrees per second.
 config_wall_growth_duration = 1.5  # Seconds; set to 0 for instant walls.
 config_wall_growth_delay = 1.0  # Seconds before the walls begin rising.
+config_brb_scale = 2
+config_brb_font = 'tahomabd.ttf'  # Tahoma Bold, from the Windows Fonts folder.
+config_brb_speed = (.12, .09)  # Horizontal and vertical UI units per second.
+config_brb_gradient_speed = .2  # Upward gradient cycles per second.
+config_brb_outline_width = 4.0  # Black outline thickness in screen pixels.
 
 
 # Live solver state; no complete solution path is stored.
@@ -47,8 +56,78 @@ walls_raised = False
 app = Ursina(
     size=(config_window_width, config_window_height),
     fullscreen=False,
-    borderless=False,
+    borderless=True,
+    editor_ui_enabled=False,
 )
+window.editor_ui.enabled = False
+window.exit_button.enabled = False
+window.fps_counter.enabled = False
+mouse.visible = False
+
+# Poll Windows directly, independently of focused-window input and maze updates.
+get_async_key_state = ctypes.WinDLL('user32', use_last_error=True).GetAsyncKeyState
+get_async_key_state.argtypes = [ctypes.c_int]
+get_async_key_state.restype = ctypes.c_short
+
+
+def check_global_escape(task):
+    if get_async_key_state(0x1B) & 0x8000:  # VK_ESCAPE, currently held down.
+        application.quit()
+        return task.done
+    return task.cont
+
+
+app.taskMgr.add(check_global_escape, 'global_escape', sort=-100)
+
+
+windows_font_folder = Path(os.environ.get('WINDIR', 'C:/Windows')) / 'Fonts'
+brb_font_path = next(
+    (windows_font_folder / name
+     for name in (config_brb_font, 'segoeuib.ttf', 'arialbd.ttf')
+     if (windows_font_folder / name).is_file()),
+    None,
+)
+brb_font = (Filename.from_os_specific(str(brb_font_path.resolve())).get_fullpath()
+            if brb_font_path else Text.default_font)
+
+brb_text = Text(
+    text='Be\nRight\nBack', parent=camera.ui, origin=(-.5, 0),
+    font=brb_font, scale=config_brb_scale, color=color.white, z=-1,
+)
+brb_velocity = Vec2(*config_brb_speed)
+brb_text.shader = vaporwave_text_shader
+brb_text.set_shader_input('outline_width', config_brb_outline_width)
+brb_gradient_phase = 0.0
+brb_text_width, brb_text_height = brb_text.width, brb_text.height
+
+
+def move_brb_text():
+    """Bounce the entire label inside the current window, including on resize."""
+    global brb_gradient_phase
+    padding = .02
+    fitted_scale = max(.01, min(
+        config_brb_scale,
+        (window.aspect_ratio - 2 * padding) / brb_text_width,
+        (1 - 2 * padding) / brb_text_height,
+    ))
+    brb_text.scale = fitted_scale
+    x_min = -window.aspect_ratio / 2 + padding
+    x_max = max(x_min, window.aspect_ratio / 2 - brb_text_width * fitted_scale - padding)
+    y_limit = max(0, .5 - brb_text_height * fitted_scale / 2 - padding)
+    brb_text.x += brb_velocity.x * time.dt
+    brb_text.y += brb_velocity.y * time.dt
+    for axis, lower, upper in (('x', x_min, x_max), ('y', -y_limit, y_limit)):
+        position = getattr(brb_text, axis)
+        if position <= lower or position >= upper:
+            setattr(brb_text, axis, max(lower, min(upper, position)))
+            speed = abs(getattr(brb_velocity, axis))
+            setattr(brb_velocity, axis, -speed if position >= upper else speed)
+
+    brb_gradient_phase = (brb_gradient_phase + time.dt * config_brb_gradient_speed) % 1
+    brb_text.set_shader_input('gradient_phase', brb_gradient_phase)
+    brb_text.set_shader_input('viewport_height', float(app.win.get_y_size()))
+    brb_text.set_shader_input('label_center_y', float(brb_text.y))
+    brb_text.set_shader_input('label_height', brb_text_height * fitted_scale)
 
 
 def project_texture(filename, fallback):
@@ -137,9 +216,6 @@ if maze is not None:
         camera.position = start_position
 
 
-solver_status = Text(text='No maze passages available', position=(-.85, .46), scale=1)
-
-
 def cell_to_world(cell):
     column, row = cell
     return Vec3(
@@ -153,7 +229,6 @@ if passages:
     start_cell, goal_cell = passages[0], passages[-1]
     # Creating the iterator performs no search. update() advances it live.
     solver = solve_maze_live(config_maze_solver, maze, start=start_cell, end=goal_cell)
-    solver_status.text = f'{config_maze_solver}: searching'
     point = cell_to_world(start_cell)
     Entity(model='cube', position=(point.x, .03, point.z),
            scale=(cell_width * .4, .05, cell_depth * .4), color=color.green)
@@ -195,7 +270,6 @@ def raise_walls():
     wall_growth_elapsed += time.dt
     growth_time = wall_growth_elapsed - config_wall_growth_delay
     if growth_time < 0:
-        solver_status.text = 'Waiting to raise maze walls'
         return True
     progress = (1 if config_wall_growth_duration <= 0 else
                 min(growth_time / config_wall_growth_duration, 1))
@@ -204,8 +278,6 @@ def raise_walls():
         wall.scale_y = max(.001, config_roof_height * eased)
 
     walls_raised = progress >= 1
-    if not walls_raised:
-        solver_status.text = 'Raising maze walls'
     return not walls_raised
 
 
@@ -222,13 +294,11 @@ def move_camera():
                 decision = next(solver)
             except StopIteration:
                 solver_finished = True
-                solver_status.text = 'No route to goal'
                 return
             if decision is not None:
                 camera_target = decision
                 break
         if camera_target is None:
-            solver_status.text = f'{config_maze_solver}: searching'
             return
 
     target = cell_to_world(camera_target)
@@ -241,11 +311,9 @@ def move_camera():
         turn_step = config_turn_speed * time.dt
         if abs(turn) > .01:
             camera.rotation_y += max(-turn_step, min(turn_step, turn))
-            solver_status.text = f'{config_maze_solver}: turning'
             return
         camera.rotation_y = desired_yaw
         camera.position += delta.normalized() * min(config_movement_speed * time.dt, remaining)
-        solver_status.text = f'{config_maze_solver}: moving ({steps_taken} steps)'
         if (target - camera.position).length() > .0001:
             return
 
@@ -254,12 +322,12 @@ def move_camera():
         steps_taken += 1
     if camera_target == goal_cell:
         solver_finished = True
-        solver_status.text = f'Solved! {steps_taken} steps'
     camera_target = None
 
 
 
 def update():
+    move_brb_text()
     if raise_walls():
         face_exit_door_to_player()
         return
